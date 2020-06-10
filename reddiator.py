@@ -1,13 +1,14 @@
 #!/usr/bin/python3
 
-#== Name:		reddiator.py
-#== Version:		v0.1
+SCRIPT_NAME = 'reddiator.py'
+VERSION = '0.2'
+
 #== Description:	A Discord Bot to post reddit content automatically to channels
 #
 #
 #== Available commands:
 #
-#= r! $subreddit
+#= r! rand $subreddit
 #- Responds with a random post from the specified subreddit
 ###
 #
@@ -15,7 +16,7 @@
 #- Responds with a random post from the top posts of the specified subreddit.
 #
 #- Optionnal parameter [N] can be used to specify how many top posts must be loaded.
-#- Default value is 25.
+#- Default value is 10.
 ###
 #
 #- Optionnal paramerer [period] can be used to specify the top posts period. Supported value are all, year, month, week, day/today, hour/now.
@@ -24,7 +25,7 @@
 #= r! list $category
 #- Responds with a random post taken from a list of pre-defined subreddits mapped to the specified category.
 #- Subreddits categories and corresponding subreddits are loaded from a file during script startup.
-#= r! list_subs $category
+#= r! list $category -subs
 #- Responds with the list of subreddits mapped to the specified category.
 #TODO	=> possible add-in: exclude a list of subreddits from pre-defined list for $category: r!list $category -e sub1,sub2,sub3...
 ###
@@ -34,68 +35,87 @@
 # If no command is specified, the bot will display the general help menu, with the available commands
 
 
-#TODO: implement correct logging instead of print
-#https://docs.python.org/3/howto/logging.html
-
-import os
+import os, sys, getopt, psutil, logging
 
 import discord
+client = discord.Client()
+
 from dotenv import load_dotenv
 
 import requests
 from requests.auth import HTTPBasicAuth
-import logging
 
 import json
 
 from random import randint
 
-client = discord.Client()
+from time import time
 
+def custom_info_log(msg):
+	logging.log(21, '\t' + msg)
+
+class RequestException(Exception):
+	def __init__(self, code):
+		super().__init__(code)
+		self.code = code
 
 def load_categories(filename):
 	with open(filename, 'r') as f:
 		categories = {}
 		for line in f.readlines():
 			line_split = line.split(':')
-			categories[line_split[0]] = line_split[1].split(',')
+			categories[line_split[0]] = [a.replace('\n','') for a in line_split[1].split(',')]
 	return categories
 
 
 def get_access_token():
 	token_req = requests.post('https://www.reddit.com/api/v1/access_token', auth = HTTPBasicAuth(os.getenv('REDDIT_CLIENT_ID'), os.getenv('REDDIT_CLIENT_SECRET')), data = 'grant_type=refresh_token&refresh_token=' + os.getenv('REDDIT_REFRESH_TOKEN'), headers = {'User-Agent' : os.getenv('REDDIT_USER_AGENT')})
 	at = json.loads(token_req.text)['access_token']
-	print('Retrieved Reddit AT : ' + at)
+	custom_info_log(f'Retrieved Reddit AT : {at}')
 	return at
 
-def make_request(method, url, allow_redirects = False):
-	# TODO : implement proper HTTP request/error and response handling
-	# this methods either returns the body and headers of response, or handles errors (404, 403, 401, 500) graciously)
-	print('')
+def make_request(url, allow_redirects = False):
+	at = get_access_token()
+	headers = {'Authorization' : 'Bearer ' + at, 'User-Agent' : os.getenv('REDDIT_USER_AGENT')}
 
-async def respond(msg,link):
+	post_req = requests.get(url, headers=headers, allow_redirects = allow_redirects)
+
+	if post_req.status_code == 200:
+		return post_req
+	elif post_req.status_code == 404:
+		logging.warning(f'Request to get a random post from specified subreddit failed with a HTTP 404 error. The subreddit may not exist anymore.')
+		raise RequestException(404)
+	elif post_req.status_code == 302 and 'search?q=' in post_req.text:
+		logging.warning("""Request to get a random post from specified subreddit returned with a HTTP 302 error redirecting to the search page: the subreddit probably doesn't exist.""")
+		raise RequestException(302)
+	else:
+		logging.error(f'Request to get a random post from specified subreddit failed with a HTTP {post_req.status_code} error.\nThe response headers are:\n{post_req.headers}\nThe response body is:\n{post_req.text}')
+		raise RequestException(1)
+
+async def respond(msg, link):
 	# TODO implement option to beautify response sent to server, to format it correctly
 	# could also keep the option of sending the raw post to avoid spoiler and blur nsfw content (only providing the link)
 	await msg.channel.send(link)
 
-async def print_top_post(msg, subreddit, number = 25, timespan = 'all'):
-	print('print_top_post')
-	at = get_access_token()
-	headers = {'Authorization' : 'Bearer ' + at, 'User-Agent' : os.getenv('REDDIT_USER_AGENT')}
-	post_req = requests.get('https://oauth.reddit.com/r/' + subreddit + '/top?t=' + timespan + '&limit=' + str(number), headers = headers, allow_redirects = False)
-	print(post_req.status_code)
-	print(post_req.headers)
-	links = [items['data']['url'] for items in json.loads(post_req.text)['data']['children']]
+async def print_top_post(msg, subreddit, number = 10, timespan = 'all'):
+	custom_info_log(f'Top post request for subreddit {subreddit}, with pool size = {number} and timespan = {timespan}')
 
-	print('## Fetched ' + str(len(links)) + ' links\n')
+	url = 'https://oauth.reddit.com/r/' + subreddit + '/top?t=' + timespan + '&limit=' + str(number)
 
-	random_index = randint(0, len(links) - 1)
+	try:
+		post_req = make_request(url, allow_redirects = False)
+		links = [items['data']['url'] for items in json.loads(post_req.text)['data']['children']]
 
-	await respond(msg, links[random_index])
+		custom_info_log(f'Successfully fetched {str(len(links))} links')
 
+		random_index = randint(0, len(links) - 1)
+
+		await respond(msg, links[random_index])
+	except RequestException as e:
+		await handle_error(msg, e.code)
 
 async def print_help_menu(msg, type = 'general'):
-	print('help menu requested')
+	custom_info_log(f'Help menu requested (type = {type})')
 	if type == 'general' or type not in ['general', 'top', 'list']:
 		print('general help menu')
 	if type == 'top':
@@ -104,57 +124,71 @@ async def print_help_menu(msg, type = 'general'):
 		print('list help menu')
 
 async def print_post_in_list(msg, listname):
-	print('print_post_in_list')
+	custom_info_log(f'Received list command from user {msg.author.name} for {listname}')
 	if listname not in CATEGORIES.keys():
-		print('Requested category not in list of categories loaded.')
+		logging.warning('Requested list does not exist in the loaded categories.')
+		response = """Sorry, the category you requested does not exist. Try "r! help list" to see the help menu."""
+		await msg.channel.send(response)
 	else:
 		subreddits = CATEGORIES[listname]
-		print('Got ' + str(len(subreddits)) + ' subreddits matching category')
+		custom_info_log(f'Got {str(len(subreddits))} subreddits matching the category {listname}')
 		links = {}
 		for sub in subreddits:
-			print(sub)
-			links[sub] = get_random_post_from_subreddit(sub)
+			try:
+				links[sub] = get_random_post_from_subreddit(sub)
+			except:
+				pass
 
-		print('## Fetched ' + str(len(links)) + ' links\n')
+		if len(links) == 0:
+			logging.warning('Fetch zero link, printing an error message to the user, something is probably wrong or reddit may be down...')
+			await handle_error(msg, 0)
+
+		custom_info_log(f'Successfully fetched {str(len(links))} links')
+		if len(links) != len(subreddits):
+			logging.warning('Reddiator failed to fetch a post from all subreddits specified in the list of this category. List update may be required')
 
 		random_index = randint(0, len(links) - 1)
-		print(random_index)
+		custom_info_log(f'Link number {random_index} was chosen')
 
 		await respond(msg, links[list(links.keys())[random_index]])
 
 
 def get_random_post_from_subreddit(subreddit):
-	print('get_post_from_subreddit')
-	at = get_access_token()
-	headers = {'Authorization' : 'Bearer ' + at, 'User-Agent' : os.getenv('REDDIT_USER_AGENT')}
-	post_req = requests.get('https://oauth.reddit.com/r/' + subreddit + '/random', headers = headers, allow_redirects = True)
-	print(post_req.headers)
-	print(post_req.text)
-	if post_req.status_code == 200:
-		print('ok got a post')
-		post_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['url']
-		print('## Fetched ' + str(len(post_link)) + ' links\n')
-		return post_link
-	elif post_req.status_code == 404:
-		print('Subreddit not found')
-		return ''
-	else:
-		print('Other error : ' + str(post_req.status_code))
-		print('RESPONSE HEADERS:\n')
-		print(post_req.headers)
-		print('\n\n RESPONSE BODY:\n')
-		print(post_req.text)
-		return ''
+
+	url = 'https://oauth.reddit.com/r/' + subreddit + '/random'
+
+	try:
+		post_req = make_request(url, allow_redirects = True)
+		if post_req.status_code == 200:
+			custom_info_log(f'Successfully got random post from {subreddit}')
+			post_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['url']
+			return post_link
+	except RequestException as e:
+		raise RequestException(e.code)
 
 async def print_post_from_subreddit(msg, subreddit):
-	print('print_post_from_subreddit')
-	post_link = get_random_post_from_subreddit(subreddit)
-	if len(post_link) > 0:
+	custom_info_log(f'Received random post command for {subreddit} from user {msg.author.name}')
+
+	try:
+		post_link = get_random_post_from_subreddit(subreddit)
 		await respond(msg, post_link)
+	except RequestException as e:
+		await handle_error(msg, e.code)
+
+
+async def handle_error(msg, code):
+	if code in [404, 302]:
+		message = """Sorry, it seems that this subreddit doesn't exist (anymore?)."""
+	elif code == 0:
+		message = """Sorry, something went very wrong and we didn't manage to get a link from any of the subreddits mapped to this category. Reddit may be down, in which case... good luck in the outside..."""
+	elif code == 1:
+		message = """Sorry, something went wrong, please reach out to us (nicely)!"""
+
+	await msg.channel.send(message)
 
 @client.event
 async def on_ready():
-	print(f'{client.user} is now connect to the Discord server!')
+	custom_info_log(f'{client.user} is now connected to the Discord server!')
 
 @client.event
 async def on_message(message):
@@ -164,61 +198,114 @@ async def on_message(message):
 	message_chunks = message.content.split(' ')
 
 	if message_chunks[0] == 'r!' and len(message_chunks) > 1:
-		print(f'Received a message for the bot: {message.content}')
-
+		custom_info_log(f'Received a message for the bot: {message.content}')
 
 		if message_chunks[1] == 'help':
-			print('Help menu requested by user')
 			await print_help_menu(message)
 
 		elif message_chunks[1] == 'top':
-			print('Top post of a subreddit requested by user')
 			if len(message_chunks) == 3:
-				print('defaulting to 25 top posts of all time')
 				await print_top_post(message, message_chunks[2])
+
 			if len(message_chunks) == 4:
-				print('received either number or timespan')
 				if message_chunks[3].isdigit():
-					print('number: ' + str(message_chunks[3]))
 					await print_top_post(message, message_chunks[2], number=message_chunks[3])
+
 				elif message_chunks[3] in ['hour','now','day','today','week','month','year','all']:
-					print('timespan: ' + str(message_chunks[3]))
 					await print_top_post(message, message_chunks[2], timespan=message_chunks[3])
 				else:
-					print('wrong parameter')
+					logging.warning(f'Received a top command from user {message.author.name} with wrong parameters.')
 					response = """Bad command! Type 'r! help' for the help menu, and 'r! help top' for the top command help menu"""
 					await message.channel.send(response)
+
 			if len(message_chunks) == 5:
-				print('received both number ('+str(message_chunks[3])+') and timespan ('+str(message_chunks[4])+')')
 				if message_chunks[3].isdigit() and message_chunks[4] in ['hour','now','day','today','week','month','year','all']:
-					print('command ok')
 					await print_top_post(message, message_chunks[2], message_chunks[3], message_chunks[4])
 				else:
-					print('wrong parameter')
+					logging.warning(f'Received a top command from user {message.author.name} with wrong parameters.')
 					response = """Bad command! Type 'r! help' for the help menu, and 'r! help top' for the top command help menu"""
 					await message.channel.send(response)
 
 		elif message_chunks[1] == 'list':
-			print('random post from list of subreddits requested')
-			await print_post_in_list(message, message_chunks[2])
+			if len(message_chunks) > 3:
+				if message_chunks[3] == '-subs':
+					listname = message_chunks[2]
+					if listname not in CATEGORIES.keys():
+						logging.warning('Requested list {listname} does not exist in the loaded categories.')
+						response = """Sorry, the category you requested does not exist. Try "r! help list" to see the help menu."""
+					else:
+						subreddits = CATEGORIES[listname]
+						response = 'The following subreddits are in the category \'' + listname + '\': ' +  ', '.join(subreddits)
+					await message.channel.send(response)
+			else:
+				await print_post_in_list(message, message_chunks[2])
+
+		elif message_chunks[1] == 'rand':
+			await print_post_from_subreddit(message, message_chunks[2])
+
 
 		else:
-			print('random post in a subreddit requested')
-			await print_post_from_subreddit(message, message_chunks[1])
+			logging.warning('Bad command, responding with help menu hint.')
+			response = """Bad command! Type 'r! help' for the help menu!"""
+			await message.channel.send(response)
 
+
+
+if __name__ == '__main__':
+
+	#kill existing script process if any is running
+	for proc in psutil.process_iter():
+		if proc.name() == f'/usr/bin/python3 {SCRIPT_NAME}':
+			print('Killing process {proc.pid()}')
+			proc.kill()
+
+	try:
+		opts, args = getopt.getopt(sys.argv[1:],"hf:l:",["logfile=","loglevel="])
+	except getopt.GetoptError:
+		print("""Invalid options. Available options are:\n\n -h \t\t\t\t\t\tDisplays this help menu\n -f <filename>, --logfile=<filename> \t\tSets the logfilename.\n -l <level>, loglevel=<level>\t\t\tSets the log level. Available values are info, warn and error.""")
+		sys.exit(2)
+
+	logfilename = ''
+	loglevel = 21
+
+	for opt, arg in opts:
+		if opt in ('-h', '--help'):
+			print('Help message')
+			sys.exit()
+		elif opt in ('-f', '--logfile'):
+			logfilename = arg
+		elif opt in ('-l', '--loglevel'):
+			if arg == 'info':
+				loglevel = 21
+			elif arg == 'warn':
+				loglevel = 30
+			elif arg == 'error':
+				loglevel = 40
+			else:
+				#defaulting to info
+				loglevel = 21
+
+	if len(logfilename) == 0:
+		#defaulting to timestamped logfile
+		logfilename = 'reddiator.' + str(int(time())) + '.log'
+
+	logging.addLevelName(21, 'INFO')
+	logging.basicConfig(filename=logfilename,
+                            filemode='w',
+                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s\t %(message)s',
+                            level=loglevel)
+	custom_info_log(f'Starting Reddiator Bot version {VERSION}')
+
+
+	load_dotenv()
+	TOKEN = os.getenv('DISCORD_TOKEN')
+
+	CATEGORIES_FILENAME = os.getenv('CATEGORIES_FILENAME')
+	if len(CATEGORIES_FILENAME) > 0:
+		CATEGORIES = load_categories(CATEGORIES_FILENAME)
+		custom_info_log(f'Successfully loaded subreddits for {len(CATEGORIES)} categories.')
 	else:
-		print('Bad command or no command received, responding with help menu hint.')
-		response = """Bad command! Type 'r! help' for the help menu!"""
-		await message.channel.send(response)
+        	logging.warning('No category file found in environnement variables, skipped category loading.')
+        	CATEGORIES = {}
 
-load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
-
-CATEGORIES_FILENAME = os.getenv('CATEGORIES_FILENAME')
-if len(CATEGORIES_FILENAME) > 0:
-        CATEGORIES = load_categories(CATEGORIES_FILENAME)
-else:
-        print("Skipped categories loading.")
-        CATEGORIES = {}
-
-client.run(TOKEN)
+	client.run(TOKEN)
