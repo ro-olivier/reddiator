@@ -75,6 +75,7 @@ def get_access_token():
 	return at
 
 def make_request(url, allow_redirects = False):
+	#TODO: fetch AT only if needed
 	at = get_access_token()
 	headers = {'Authorization' : 'Bearer ' + at, 'User-Agent' : os.getenv('REDDIT_USER_AGENT')}
 
@@ -92,10 +93,21 @@ def make_request(url, allow_redirects = False):
 		logging.error(f'Request to get a random post from specified subreddit failed with a HTTP {post_req.status_code} error.\nThe response headers are:\n{post_req.headers}\nThe response body is:\n{post_req.text}')
 		raise RequestException(1)
 
-async def respond(msg, link):
-	# TODO implement option to beautify response sent to server, to format it correctly
-	# could also keep the option of sending the raw post to avoid spoiler and blur nsfw content (only providing the link)
-	await msg.channel.send(link)
+async def respond(msg, link, permalink, subreddit):
+	#TODO update to use embeds to send more beautiful content
+
+	prefix = 'https://www.reddit.com'
+
+	if link[-4:] == '.gif' or 'gfycat.com' in link or 'gif' in link or 'redgifs' in link:
+		message = f'Here is the link to a random gif from /r/{subreddit}: {link}\nLink to the original reddit post <'+ prefix + f'{permalink}'+'>'
+	elif link[-4:] in ['.jpg','.png'] or link[-5:] == '.jpeg' or 'imgur.com' in link:
+		message = f' Here is the link to a random picture from /r/{subreddit}: {link}\nLink to the original reddit post <'+ prefix + f'{permalink}'+'>'
+	elif 'reddit.com' in link:
+		message = f' Here is the link to a random post from /r/{subreddit}: {link}'
+	else:
+		message = f' Here is the link to a random post from /r/{subreddit}: {link}\nLink to the original reddit post <'+ prefix + f'{permalink}'+'>'
+
+	await msg.channel.send(message)
 
 async def print_top_post(msg, subreddit, number = 10, timespan = 'all'):
 	custom_info_log(f'Top post request for subreddit {subreddit}, with pool size = {number} and timespan = {timespan}')
@@ -105,37 +117,44 @@ async def print_top_post(msg, subreddit, number = 10, timespan = 'all'):
 	try:
 		post_req = make_request(url, allow_redirects = False)
 		links = [items['data']['url'] for items in json.loads(post_req.text)['data']['children']]
+		permalinks = [items['data']['permalink'] for items in json.loads(post_req.text)['data']['children']]
 
 		custom_info_log(f'Successfully fetched {str(len(links))} links')
 
 		random_index = randint(0, len(links) - 1)
+		custom_info_log(f'Link #{random_index} was chosen')
 
-		await respond(msg, links[random_index])
+		await respond(msg, links[random_index], permalinks[random_index], subreddit)
 	except RequestException as e:
 		await handle_error(msg, e.code)
 
 async def print_help_menu(msg, type = 'general'):
 	custom_info_log(f'Help menu requested (type = {type})')
 	if type == 'general' or type not in ['general', 'top', 'list']:
-		print('general help menu')
+		message = f"""Thank you for use Reddiator v{VERSION}!\nThe bot responds to the following commands:\n `r! rand $subreddit`          Displays a random post from the specified subreddit.\n `r! top $subreddit`            Displays a random post from the top posts of the specified subreddit.\n `r! list $list`                     Displays a random top from a selection of subreddits mapped to a list."""
 	if type == 'top':
-		print('top help menu')
+		message = """The `top` command displays a random post in the top posts of the specified subreddit.\nYou can use arguments to specify how many top posts the bot should look at, and the period from which the top posts must be extracted.\nThe command is:\n `r! top $subreddit $N $period` \n\nPossible values from the "period" parameter are year|all, month, week, day|today, hour|now.\nThe default value for N is 10. If you get the same post twice, try increasing this parameter!"""
 	if type == 'list':
-		print('list help menu')
+		message = """The `list` command displays a random post from a list of predefined subreddits (called a category).\nYou can get the list of predefined subreddits mapped to a category with the following command:\n\n `r! list $category -subs`"""
+
+	await msg.channel.send(message)
 
 async def print_post_in_list(msg, listname):
 	custom_info_log(f'Received list command from user {msg.author.name} for {listname}')
 	if listname not in CATEGORIES.keys():
 		logging.warning('Requested list does not exist in the loaded categories.')
-		response = """Sorry, the category you requested does not exist. Try "r! help list" to see the help menu."""
+		response = """Sorry, the category you requested does not exist. Try `r! help list` to see the help menu for the 'list' command."""
 		await msg.channel.send(response)
 	else:
 		subreddits = CATEGORIES[listname]
 		custom_info_log(f'Got {str(len(subreddits))} subreddits matching the category {listname}')
+
 		links = {}
+		permalinks = {}
+
 		for sub in subreddits:
 			try:
-				links[sub] = get_random_post_from_subreddit(sub)
+				links[sub], permalinks[sub] = get_random_post_from_subreddit(sub)
 			except:
 				pass
 
@@ -148,9 +167,9 @@ async def print_post_in_list(msg, listname):
 			logging.warning('Reddiator failed to fetch a post from all subreddits specified in the list of this category. List update may be required')
 
 		random_index = randint(0, len(links) - 1)
-		custom_info_log(f'Link number {random_index} was chosen')
+		custom_info_log(f'Link #{random_index} was chosen')
 
-		await respond(msg, links[list(links.keys())[random_index]])
+		await respond(msg, links[list(links.keys())[random_index]], permalinks[list(links.keys())[random_index]], list(links.keys())[random_index])
 
 
 def get_random_post_from_subreddit(subreddit):
@@ -160,9 +179,11 @@ def get_random_post_from_subreddit(subreddit):
 	try:
 		post_req = make_request(url, allow_redirects = True)
 		if post_req.status_code == 200:
+			print(json.loads(post_req.text)[0]['data']['children'][0]['data'])
 			custom_info_log(f'Successfully got random post from {subreddit}')
 			post_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['url']
-			return post_link
+			perma_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['permalink']
+			return post_link, perma_link
 	except RequestException as e:
 		raise RequestException(e.code)
 
@@ -170,8 +191,8 @@ async def print_post_from_subreddit(msg, subreddit):
 	custom_info_log(f'Received random post command for {subreddit} from user {msg.author.name}')
 
 	try:
-		post_link = get_random_post_from_subreddit(subreddit)
-		await respond(msg, post_link)
+		post_link, perma_link = get_random_post_from_subreddit(subreddit)
+		await respond(msg, post_link, perma_link, subreddit)
 	except RequestException as e:
 		await handle_error(msg, e.code)
 
@@ -201,7 +222,10 @@ async def on_message(message):
 		custom_info_log(f'Received a message for the bot: {message.content}')
 
 		if message_chunks[1] == 'help':
-			await print_help_menu(message)
+			if len(message_chunks) == 3:
+				await print_help_menu(message, type = message_chunks[2])
+			else:
+				await print_help_menu(message)
 
 		elif message_chunks[1] == 'top':
 			if len(message_chunks) == 3:
@@ -215,7 +239,7 @@ async def on_message(message):
 					await print_top_post(message, message_chunks[2], timespan=message_chunks[3])
 				else:
 					logging.warning(f'Received a top command from user {message.author.name} with wrong parameters.')
-					response = """Bad command! Type 'r! help' for the help menu, and 'r! help top' for the top command help menu"""
+					response = """Bad command! Type `r! help` for the general help menu, and `r! help top` for the help menu for the 'top' command."""
 					await message.channel.send(response)
 
 			if len(message_chunks) == 5:
@@ -223,7 +247,7 @@ async def on_message(message):
 					await print_top_post(message, message_chunks[2], message_chunks[3], message_chunks[4])
 				else:
 					logging.warning(f'Received a top command from user {message.author.name} with wrong parameters.')
-					response = """Bad command! Type 'r! help' for the help menu, and 'r! help top' for the top command help menu"""
+					response = """Bad command! Type `r! help` for the general help menu, and `r! help top` for the help menu for the 'top' command."""
 					await message.channel.send(response)
 
 		elif message_chunks[1] == 'list':
@@ -232,7 +256,7 @@ async def on_message(message):
 					listname = message_chunks[2]
 					if listname not in CATEGORIES.keys():
 						logging.warning('Requested list {listname} does not exist in the loaded categories.')
-						response = """Sorry, the category you requested does not exist. Try "r! help list" to see the help menu."""
+						response = """Sorry, the category you requested does not exist. Try `r! help list` to see the help menu for the 'list' command."""
 					else:
 						subreddits = CATEGORIES[listname]
 						response = 'The following subreddits are in the category \'' + listname + '\': ' +  ', '.join(subreddits)
@@ -246,7 +270,7 @@ async def on_message(message):
 
 		else:
 			logging.warning('Bad command, responding with help menu hint.')
-			response = """Bad command! Type 'r! help' for the help menu!"""
+			response = """Bad command! Type `r! help` for the general help menu!"""
 			await message.channel.send(response)
 
 
