@@ -27,8 +27,6 @@ VERSION = '0.3'
 #- Subreddits categories and corresponding subreddits are loaded from a file during script startup.
 #= r! list $category -subs
 #- Responds with the list of subreddits mapped to the specified category.
-##TODO= r! list search $category
-##TODO= r! list all
 ##TODO= r! list $category -e sub1,sub2,sub3... (exclude some subreddits)
 
 # Ideas : give the opportunity to register commands to the user ? (to easy create categories?)
@@ -111,8 +109,10 @@ def make_request(url, allow_redirects = False):
 		logging.warning(f'Request to get a random post from specified subreddit failed with a HTTP 404 error. The subreddit may not exist anymore.')
 		raise RequestException(404)
 	elif post_req.status_code == 302 and 'search?q=' in post_req.text:
-		logging.warning("""Request to get a random post from specified subreddit returned with a HTTP 302 error redirecting to the search page: the subreddit probably doesn't exist.""")
+		logging.warning('Request to get a random post from specified subreddit returned with a HTTP 302 error redirecting to the search page: the subreddit probably doesn\'t exist.')
 		raise RequestException(302)
+	elif post_req.status_code == 403 and 'private' in post_req.text:
+		logging.error(f'Request to get a random post from speficied subreddit failed with a HTTP 403 code, the subreddit is private.')
 	else:
 		logging.error(f'Request to get a random post from specified subreddit failed with a HTTP {post_req.status_code} error.\nThe response headers are:\n{post_req.headers}\nThe response body is:\n{post_req.text}')
 		raise RequestException(1)
@@ -155,15 +155,15 @@ async def print_top_post(msg, subreddit, number = 10, timespan = 'all'):
 async def print_help_menu(msg, type = 'general'):
 	custom_info_log(f'Help menu requested (type = {type})')
 	if type == 'general' or type not in ['general', 'top', 'list']:
-		message = f"""Thank you for use Reddiator v{VERSION}!\nThe bot responds to the following commands:\n `r! rand $subreddit`          Displays a random post from the specified subreddit.\n `r! top $subreddit`            Displays a random post from the top posts of the specified subreddit.\n `r! list $list`                     Displays a random top from a selection of subreddits mapped to a list."""
+		message = f"""Thank you for use Reddiator v{VERSION}!\nThe bot responds to the following commands:\n `r! rand $subreddit`          Displays a random post from the specified subreddit.\n `r! top $subreddit`            Displays a random post from the top posts of the specified subreddit.\n `r! list $category`            Displays a random post from a selection of subreddits mapped to a category (or list).\n `r! help $command`              Displays the help menu for the specified command."""
 	if type == 'top':
-		message = """The `top` command displays a random post in the top posts of the specified subreddit.\nYou can use arguments to specify how many top posts the bot should look at, and the period from which the top posts must be extracted.\nThe command is:\n `r! top $subreddit $N $period` \n\nPossible values from the "period" parameter are year|all, month, week, day|today, hour|now.\nThe default value for N is 10. If you get the same post twice, try increasing this parameter!"""
+		message = """The `top` command displays a random post in the top posts of the specified subreddit.\nYou can use arguments to specify how many top posts the bot should look at, and the period from which the top posts must be extracted.\nThe command is: `r! top $subreddit [N] [period]` \n\nDefault value for the period is 'all', possible values are all, year, month, week, day|today, hour|now.\nThe default value for N is 10, maximum value is 100. If you get the same post twice, try increasing this parameter!"""
 	if type == 'list':
-		message = """The `list` command displays a random post from a list of predefined subreddits (called a category).\nYou can get the list of predefined subreddits mapped to a category with the following command:\n\n `r! list $category -subs`"""
+		message = """The `list` command displays a random post from a list of predefined subreddits (called a category).\nThe following commands are also available:\n `r! list $category -subs`                          Lists the subreddits mapped to the specified category.\n `r! list $string -cat_search`                 Lists the available categories with a name containing the specified string.\n `r! list $string -search`                          Lists the available categories mapped to at least one subreddits with a name containg the specified string.\n `r! list $category -e $sub1,...`          Exclude the subreddits specified from the list mapped to the category. Subreddits to exclude must be seperated by a comma.\n `r! list -all`                                                   Lists all the available categories."""
 
 	await msg.channel.send(message)
 
-async def print_post_in_list(msg, listname):
+async def print_post_in_list(msg, listname, excluded_subs = []):
 	custom_info_log(f'Received list command from user {msg.author.name} for {listname}')
 	listname = listname.lower()
 
@@ -173,14 +173,32 @@ async def print_post_in_list(msg, listname):
 		await msg.channel.send(response)
 	else:
 		subreddits = CATEGORIES[listname]['subreddits']
-		custom_info_log(f'Got {str(len(subreddits))} subreddits matching the category {listname}')
+		custom_info_log(f'Got {len(subreddits)} subreddits matching the category {listname}')
+
+		filtered_subreddits = []
+		if len(excluded_subs) > 0:
+			custom_info_log(f'Received a list of subreddits to exclude: {excluded_subs}')
+			excluded_subs_list = [sub.lower() for sub in excluded_subs.split(',')]
+			for sub in subreddits:
+				if sub.lower() in excluded_subs_list:
+					custom_info_log(f'Excluding subreddit {sub} from the request')
+				else:
+					filtered_subreddits.append(sub)
+		else:
+			filtered_subreddits = subreddits
+
+		if len(filtered_subreddits) > 0:
+			custom_info_log(f'Got {len(filtered_subreddits)} subreddits to search through...')
+		else:
+			await handle_error(msg, 2)
+			return
 
 		found = False
 		loop_check = 0
 
 		while not found:
-			random_index = randint(0, len(subreddits) - 1)
-			sub = subreddits[ random_index]
+			random_index = randint(0, len(filtered_subreddits) - 1)
+			sub = filtered_subreddits[random_index]
 			custom_info_log(f'Link #{random_index} was chosen: {sub}')
 			loop_check = loop_check + 1
 
@@ -241,6 +259,8 @@ async def handle_error(msg, code):
 		message = """Sorry, something went very wrong and we didn't manage to get a link from any of the subreddits mapped to this category. Reddit may be down, in which case... good luck in the outside..."""
 	elif code == 1:
 		message = """Sorry, something went wrong, please reach out to us (nicely)!"""
+	elif code == 2:
+		message = """All the subreddits were filtered from the request."""
 
 	await msg.channel.send(message)
 
@@ -265,6 +285,9 @@ async def on_message(message):
 				await print_help_menu(message)
 
 		elif message_chunks[1] == 'top':
+			if len(message_chunks) == 2:
+				await print_help_menu(message, 'top')
+
 			if len(message_chunks) == 3:
 				await print_top_post(message, message_chunks[2])
 
@@ -289,15 +312,62 @@ async def on_message(message):
 
 		elif message_chunks[1] == 'list':
 			if len(message_chunks) > 3:
+
+				listname = message_chunks[2].lower()
+
 				if message_chunks[3] == '-subs':
-					listname = message_chunks[2]
 					if listname not in CATEGORIES.keys():
 						logging.warning('Requested list {listname} does not exist in the loaded categories.')
 						response = """Sorry, the category you requested does not exist. Try `r! help list` to see the help menu for the 'list' command."""
 					else:
 						subreddits = CATEGORIES[listname]['subreddits']
 						response = 'The following subreddits are in the category \'' + listname + '\': ' +  ', '.join(subreddits)
+
 					await message.channel.send(response)
+
+				elif message_chunks[3] in ['-category_search','-cat_search','-catsearch','-csearch']:
+
+					search_results = []
+
+					for cat in CATEGORIES.keys():
+						if listname in cat:
+							search_results.append(cat)
+
+					if len(search_results) > 1:
+						response = 'The following categories contain the string \'' + listname + '\': ' + ', '.join(search_results)
+					elif len(search_results) == 1:
+						response = 'Only one category contains the string \'' + listname + '\': ' + search_results[0]
+					else:
+						response = 'Sorry, there are no categories with a name containing the string \'' + listname + '\''
+
+					await message.channel.send(response)
+
+				elif message_chunks[3] == '-search':
+
+					search_results = []
+
+					for cat in CATEGORIES.keys():
+						if any([listname in sub.lower() for sub in CATEGORIES[cat]['subreddits']]):
+							search_results.append(cat)
+
+					if len(search_results) > 1:
+						response = 'The following categories contain a subreddit with a name containg the string \'' + listname + '\': ' + ', '.join(search_results)
+					elif len(search_results) == 1:
+						response = 'Only one category contains a subreddit with a name containing the string \'' + listname + '\': ' + search_results[0]
+					else:
+						response = 'Sorry, there are no categories with at least a subreddit with a name containing the string \'' + listname + '\''
+
+					await message.channel.send(response)
+
+				elif message_chunks[3] in ['-e', '-exclude', '-ex']:
+
+					await print_post_in_list(message, message_chunks[2], message_chunks[4])
+
+			elif message_chunks[2] == '-all':
+				response = 'The following categories are available: ' + ', '.join(CATEGORIES.keys())
+				await message.channel.send(response)
+			elif len(message_chunks) == 2:
+				await print_help_menu(message, 'list')
 			else:
 				await print_post_in_list(message, message_chunks[2])
 
@@ -324,7 +394,7 @@ if __name__ == '__main__':
 
 	for opt, arg in opts:
 		if opt in ('-h', '--help'):
-			print('Help message')
+			print(f"""Reddiator Bot version {VERSION}\nAvailable options are:\n\n -h \t\t\t\t\t\tDisplays this help menu\n -f <filename>, --logfile=<filename> \t\tSets the logfilename.\n -l <level>, loglevel=<level>\t\t\tSets the log level. Available values are info, warn and error.""")
 			sys.exit()
 		elif opt in ('-f', '--logfile'):
 			logfilename = arg
