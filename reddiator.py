@@ -15,21 +15,31 @@ VERSION = '0.3'
 #= r! top $subreddit [N] [period]
 #- Responds with a random post from the top posts of the specified subreddit.
 #
-#- Optionnal parameter [N] can be used to specify how many top posts must be loaded.
+#- Optional parameter [N] can be used to specify how many top posts must be loaded.
 #- Default value is 10.
-###
 #
-#- Optionnal paramerer [period] can be used to specify the top posts period. Supported value are all, year, month, week, day/today, hour/now.
+#- Optional paramerer [period] can be used to specify the top posts period. Supported value are all, year, month, week, day/today, hour/now.
 #- Default value is all.
+###
 #
 #= r! list $category
 #- Responds with a random post taken from a list of pre-defined subreddits mapped to the specified category.
 #- Subreddits categories and corresponding subreddits are loaded from a file during script startup.
+#
 #= r! list $category -subs
 #- Responds with the list of subreddits mapped to the specified category.
-##TODO= r! list $category -e sub1,sub2,sub3... (exclude some subreddits)
-
-# Ideas : give the opportunity to register commands to the user ? (to easy create categories?)
+#
+#= r! list $string -search
+#- Responds with the list of categories mapped to a subreddit containg the specified string in its name.
+#
+#= r! list $string -cat_search
+#- Responds with the list of categories with a name containing the specified string in its name.
+#
+#= r! list -all
+#- Responds with the full list of available categories.
+#
+#= r! list $category -e $sub1,$sub2...
+#- Same behaviour as normal command, but excluded the specified subreddits from the ones mapped with the specified category.
 ###
 #
 #- r! help [command]
