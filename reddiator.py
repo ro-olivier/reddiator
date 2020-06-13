@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 SCRIPT_NAME = 'reddiator.py'
-VERSION = '0.2'
+VERSION = '0.3'
 
 #== Description:	A Discord Bot to post reddit content automatically to channels
 #
@@ -27,7 +27,11 @@ VERSION = '0.2'
 #- Subreddits categories and corresponding subreddits are loaded from a file during script startup.
 #= r! list $category -subs
 #- Responds with the list of subreddits mapped to the specified category.
-#TODO	=> possible add-in: exclude a list of subreddits from pre-defined list for $category: r!list $category -e sub1,sub2,sub3...
+##TODO= r! list search $category
+##TODO= r! list all
+##TODO= r! list $category -e sub1,sub2,sub3... (exclude some subreddits)
+
+# Ideas : give the opportunity to register commands to the user ? (to easy create categories?)
 ###
 #
 #- r! help [command]
@@ -64,18 +68,38 @@ def load_categories(filename):
 		categories = {}
 		for line in f.readlines():
 			line_split = line.split(':')
-			categories[line_split[0]] = [a.replace('\n','') for a in line_split[1].split(',')]
+			categories[line_split[0].replace('','').lower()] = {'name' : line_split[0], 'subreddits' : [a.replace('\n','') for a in line_split[1].split(',')]}
 	return categories
 
-
 def get_access_token():
-	token_req = requests.post('https://www.reddit.com/api/v1/access_token', auth = HTTPBasicAuth(os.getenv('REDDIT_CLIENT_ID'), os.getenv('REDDIT_CLIENT_SECRET')), data = 'grant_type=refresh_token&refresh_token=' + os.getenv('REDDIT_REFRESH_TOKEN'), headers = {'User-Agent' : os.getenv('REDDIT_USER_AGENT')})
-	at = json.loads(token_req.text)['access_token']
-	custom_info_log(f'Retrieved Reddit AT : {at}')
-	return at
+
+	global ACCESS_TOKEN
+
+	if len(ACCESS_TOKEN['AT']) == 0 or ACCESS_TOKEN['EXPIRES'] < int(time()):
+		custom_info_log('No AT currently registered, or current AT expired, requesting a new one')
+
+		try:
+			token_req = requests.post('https://www.reddit.com/api/v1/access_token', auth = HTTPBasicAuth(os.getenv('REDDIT_CLIENT_ID'), os.getenv('REDDIT_CLIENT_SECRET')), data = 'grant_type=refresh_token&refresh_token=' + os.getenv('REDDIT_REFRESH_TOKEN'), headers = {'User-Agent' : os.getenv('REDDIT_USER_AGENT')})
+			response_json = json.loads(token_req.text)
+		except:
+			logging.error('Error making the request for an AT (or parsing the response). Reddit may be down, or something may be wrong with the bot account (RT revoked?)')
+
+		try:
+			expires = int(time()) + response_json['expires_in']
+			at = response_json['access_token']
+		except:
+			logging.error('Error parsing the response from the AT request, no AT and expires attribute found in JSON. RT may be invalid?\nJSON response value: {response_json}')
+
+		custom_info_log(f'Retrieved Reddit AT : {at}')
+
+		ACCESS_TOKEN = {'AT': at, 'EXPIRES': expires}
+		return at
+
+	else:
+		custom_info_log('Looks like our access token is still valid, let\'s reuse it')
+		return ACCESS_TOKEN['AT']
 
 def make_request(url, allow_redirects = False):
-	#TODO: fetch AT only if needed
 	at = get_access_token()
 	headers = {'Authorization' : 'Bearer ' + at, 'User-Agent' : os.getenv('REDDIT_USER_AGENT')}
 
@@ -98,7 +122,7 @@ async def respond(msg, link, permalink, subreddit):
 
 	prefix = 'https://www.reddit.com'
 
-	if link[-4:] == '.gif' or 'gfycat.com' in link or 'gif' in link or 'redgifs' in link:
+	if link[-4:] == '.gif' or 'gfycat.com' in link or 'gif' in link:
 		message = f'Here is the link to a random gif from /r/{subreddit}: {link}\nLink to the original reddit post <'+ prefix + f'{permalink}'+'>'
 	elif link[-4:] in ['.jpg','.png'] or link[-5:] == '.jpeg' or 'imgur.com' in link:
 		message = f' Here is the link to a random picture from /r/{subreddit}: {link}\nLink to the original reddit post <'+ prefix + f'{permalink}'+'>'
@@ -141,35 +165,39 @@ async def print_help_menu(msg, type = 'general'):
 
 async def print_post_in_list(msg, listname):
 	custom_info_log(f'Received list command from user {msg.author.name} for {listname}')
+	listname = listname.lower()
+
 	if listname not in CATEGORIES.keys():
 		logging.warning('Requested list does not exist in the loaded categories.')
 		response = """Sorry, the category you requested does not exist. Try `r! help list` to see the help menu for the 'list' command."""
 		await msg.channel.send(response)
 	else:
-		subreddits = CATEGORIES[listname]
+		subreddits = CATEGORIES[listname]['subreddits']
 		custom_info_log(f'Got {str(len(subreddits))} subreddits matching the category {listname}')
 
-		links = {}
-		permalinks = {}
+		found = False
+		loop_check = 0
 
-		for sub in subreddits:
+		while not found:
+			random_index = randint(0, len(subreddits) - 1)
+			sub = subreddits[ random_index]
+			custom_info_log(f'Link #{random_index} was chosen: {sub}')
+			loop_check = loop_check + 1
+
 			try:
-				links[sub], permalinks[sub] = get_random_post_from_subreddit(sub)
-			except:
-				pass
+				link, permalink = get_random_post_from_subreddit(sub)
+				found = True
+			except RequestException as e:
+				if e.code in [404, 302]:
+					custom_info_log('Retrying...')
+				else:
+					await handle_error(msg, e.code)
 
-		if len(links) == 0:
-			logging.warning('Fetch zero link, printing an error message to the user, something is probably wrong or reddit may be down...')
-			await handle_error(msg, 0)
+			if loop_check > len(subreddits):
+				logging.warning('More failed requests than subreddits in the category: stopping here to avoid infine loop. Reddit may be down.')
+				await handle_error(msg, 0)
 
-		custom_info_log(f'Successfully fetched {str(len(links))} links')
-		if len(links) != len(subreddits):
-			logging.warning('Reddiator failed to fetch a post from all subreddits specified in the list of this category. List update may be required')
-
-		random_index = randint(0, len(links) - 1)
-		custom_info_log(f'Link #{random_index} was chosen')
-
-		await respond(msg, links[list(links.keys())[random_index]], permalinks[list(links.keys())[random_index]], list(links.keys())[random_index])
+		await respond(msg, link, permalink, sub)
 
 
 def get_random_post_from_subreddit(subreddit):
@@ -179,10 +207,19 @@ def get_random_post_from_subreddit(subreddit):
 	try:
 		post_req = make_request(url, allow_redirects = True)
 		if post_req.status_code == 200:
-			print(json.loads(post_req.text)[0]['data']['children'][0]['data'])
+#			print(json.loads(post_req.text)[0]['data']['children'])
+
+#			post_link = json.loads(post_req.text)[0]['data']['children']['url']
+#			perma_link = json.loads(post_req.text)[0]['data']['children']['permalink']
+
+			try:
+				post_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['url']
+				perma_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['permalink']
+			except:
+				print(json.loads(post_req.text)[0]['data']['children'])
+				raise RequestException(1)
+
 			custom_info_log(f'Successfully got random post from {subreddit}')
-			post_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['url']
-			perma_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['permalink']
 			return post_link, perma_link
 	except RequestException as e:
 		raise RequestException(e.code)
@@ -258,7 +295,7 @@ async def on_message(message):
 						logging.warning('Requested list {listname} does not exist in the loaded categories.')
 						response = """Sorry, the category you requested does not exist. Try `r! help list` to see the help menu for the 'list' command."""
 					else:
-						subreddits = CATEGORIES[listname]
+						subreddits = CATEGORIES[listname]['subreddits']
 						response = 'The following subreddits are in the category \'' + listname + '\': ' +  ', '.join(subreddits)
 					await message.channel.send(response)
 			else:
@@ -274,14 +311,7 @@ async def on_message(message):
 			await message.channel.send(response)
 
 
-
 if __name__ == '__main__':
-
-	#kill existing script process if any is running
-	for proc in psutil.process_iter():
-		if proc.name() == f'/usr/bin/python3 {SCRIPT_NAME}':
-			print('Killing process {proc.pid()}')
-			proc.kill()
 
 	try:
 		opts, args = getopt.getopt(sys.argv[1:],"hf:l:",["logfile=","loglevel="])
@@ -315,11 +345,20 @@ if __name__ == '__main__':
 
 	logging.addLevelName(21, 'INFO')
 	logging.basicConfig(filename=logfilename,
-                            filemode='w',
+                            filemode='a',
                             format='%(asctime)s,%(msecs)d %(name)s %(levelname)s\t %(message)s',
                             level=loglevel)
+
 	custom_info_log(f'Starting Reddiator Bot version {VERSION}')
 
+
+	#killing running instance of the process if any is already running
+	for proc in psutil.process_iter():
+		if proc.name() == SCRIPT_NAME and proc.pid != os.getpid():
+			logging.warning(f'Killing already running reddiator process with pid = {proc.pid}')
+			proc.kill()
+
+	custom_info_log(f'Bot initiation completed, process pid = {proc.pid}')
 
 	load_dotenv()
 	TOKEN = os.getenv('DISCORD_TOKEN')
@@ -331,5 +370,8 @@ if __name__ == '__main__':
 	else:
         	logging.warning('No category file found in environnement variables, skipped category loading.')
         	CATEGORIES = {}
+
+	global ACCESS_TOKEN
+	ACCESS_TOKEN = {'AT': '', 'EXPIRES': int(time())}
 
 	client.run(TOKEN)
