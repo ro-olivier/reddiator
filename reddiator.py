@@ -113,9 +113,9 @@ def make_request(url, allow_redirects = False):
 
 	post_req = requests.get(url, headers=headers, allow_redirects = allow_redirects)
 
-	if post_req.status_code == 200:
+	if post_req.status_code == 200 and post_req.text != '{"kind": "Listing", "data": {"modhash": null, "dist": 0, "children": [], "after": null, "before": null}}':
 		return post_req
-	elif post_req.status_code == 404:
+	elif post_req.status_code == 404 or post_req.text == '{"kind": "Listing", "data": {"modhash": null, "dist": 0, "children": [], "after": null, "before": null}}':
 		logging.warning(f'Request to get a random post from specified subreddit failed with a HTTP 404 error. The subreddit may not exist anymore.')
 		raise RequestException(404)
 	elif post_req.status_code == 302 and 'search?q=' in post_req.text:
@@ -123,6 +123,7 @@ def make_request(url, allow_redirects = False):
 		raise RequestException(302)
 	elif post_req.status_code == 403 and 'private' in post_req.text:
 		logging.error(f'Request to get a random post from speficied subreddit failed with a HTTP 403 code, the subreddit is private.')
+		raise RequestException(403)
 	else:
 		logging.error(f'Request to get a random post from specified subreddit failed with a HTTP {post_req.status_code} error.\nThe response headers are:\n{post_req.headers}\nThe response body is:\n{post_req.text}')
 		raise RequestException(1)
@@ -216,7 +217,7 @@ async def print_post_in_list(msg, listname, excluded_subs = []):
 				link, permalink = get_random_post_from_subreddit(sub)
 				found = True
 			except RequestException as e:
-				if e.code in [404, 302]:
+				if e.code in [404, 302, 403]:
 					custom_info_log('Retrying...')
 				else:
 					await handle_error(msg, e.code)
@@ -224,6 +225,7 @@ async def print_post_in_list(msg, listname, excluded_subs = []):
 			if loop_check > len(subreddits):
 				logging.warning('More failed requests than subreddits in the category: stopping here to avoid infine loop. Reddit may be down.')
 				await handle_error(msg, 0)
+				return
 
 		await respond(msg, link, permalink, sub)
 
@@ -241,10 +243,11 @@ def get_random_post_from_subreddit(subreddit):
 #			perma_link = json.loads(post_req.text)[0]['data']['children']['permalink']
 
 			try:
-				post_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['url']
-				perma_link = json.loads(post_req.text)[0]['data']['children'][0]['data']['permalink']
+				response_json = json.loads(post_req.text)
+				post_link = response_json[0]['data']['children'][0]['data']['url']
+				perma_link = response_json[0]['data']['children'][0]['data']['permalink']
 			except:
-				print(json.loads(post_req.text)[0]['data']['children'])
+				print(json.loads(post_req.text))
 				raise RequestException(1)
 
 			custom_info_log(f'Successfully got random post from {subreddit}')
@@ -263,7 +266,7 @@ async def print_post_from_subreddit(msg, subreddit):
 
 
 async def handle_error(msg, code):
-	if code in [404, 302]:
+	if code in [404, 302, 403]:
 		message = """Sorry, it seems that this subreddit doesn't exist (anymore?)."""
 	elif code == 0:
 		message = """Sorry, something went very wrong and we didn't manage to get a link from any of the subreddits mapped to this category. Reddit may be down, in which case... good luck in the outside..."""
