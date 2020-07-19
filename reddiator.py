@@ -1,7 +1,8 @@
+
 #!/usr/bin/python3
 
 SCRIPT_NAME = 'reddiator.py'
-VERSION = '0.5'
+VERSION = '0.5.1'
 
 #== Description:	A Discord Bot to post reddit content automatically to channels
 #
@@ -86,7 +87,7 @@ def load_categories(filename):
 			categories[line_split[0].replace('','').lower()] = {'name' : line_split[0], 'subreddits' : [a.replace('\n','') for a in line_split[1].split(',')]}
 	return categories
 
-async def respond(msg, link, permalink, subreddit, type = ''):
+async def respond(msg, link, permalink, subreddit):
 	#TODO update to use embeds to send more beautiful content
 
 	prefix = 'https://www.reddit.com'
@@ -119,7 +120,7 @@ async def print_help_menu(msg, type = 'general'):
 	elif type == 'list':
 		message = """The `list` command displays a random post from a list of predefined subreddits (called a category).\nThe following commands are also available:\n `r! list $category -subs`                          Lists the subreddits mapped to the specified category.\n `r! list $string -cat_search`                 Lists the available categories with a name containing the specified string.\n `r! list $string -search`                          Lists the available categories mapped to at least one subreddits with a name containg the specified string.\n `r! list $category -e $sub1,...`          Exclude the subreddits specified from the list mapped to the category. Subreddits to exclude must be seperated by a comma.\n `r! list -all`                                                   Lists all the available categories."""
 	elif type == 'vote':
-		message = """The `vote` command displays several posts from the same specified subreddit and let you vote for your favourite!\nYou can use arguments to specify how many posts the bot should display, as well as the time period from which the posts should be extracted.\nThe command is `r! vote $subreddit [N] [period] [random|top]`\n\nYou can use the 'random' or 'top' options to specify if you want to posts to come from the top of the period (default is top of all time) or completely randomly (in which case the period will be ignored, if specified).\nAll parameters are optionnal but must be specified in the correct order."""
+		message = """The `vote` command displays several posts from the same specified subreddit and let you vote for your favourite!\nYou can use arguments to specify how many posts the bot should display (maximum 5, default is 3), as well as the time period from which the posts should be extracted.\nThe command is `r! vote $subreddit [N] [period] [random|top]`\n\nYou can use the 'random' or 'top' options to specify if you want to posts to come from the top of the period (default is top of all time) or completely randomly (in which case the period will be ignored, if specified).\nAll parameters are optionnal but must be specified in the correct order."""
 	else:
 		message = f"""Thank you for use Reddiator v{VERSION}!\nThe bot responds to the following commands:\n `r! rand $subreddit`          Displays a random post from the specified subreddit.\n `r! top $subreddit`            Displays a random post from the top posts of the specified subreddit.\n `r! list $category`            Displays a random post from a selection of subreddits mapped to a category (or list).\n `r! vote $subreddit`          Let's you vote for your favourite post!\n `r! help $command`              Displays the help menu for the specified command."""
 
@@ -406,7 +407,7 @@ async def on_message(message):
 
 				elif len(message_chunks) == 4:
 					if message_chunks[3].isdigit():
-						await print_vote_posts_from_subreddit(message, message_chunks[2], N=message_chunks[3])
+						await print_vote_posts_from_subreddit(message, message_chunks[2], N=min(int(message_chunks[3]),5))
 
 					elif message_chunks[3] in PERIODS:
 						await print_vote_posts_from_subreddit(message, message_chunks[2], timespan=message_chunks[3])
@@ -419,9 +420,9 @@ async def on_message(message):
 
 				elif len(message_chunks) == 5:
 					if message_chunks[3].isdigit() and message_chunks[4] in PERIODS:
-						await print_top_post_from_subreddit(message, message_chunks[2], N=message_chunks[3], timespan=message_chunks[4])
+						await print_top_post_from_subreddit(message, message_chunks[2], N=min(int(message_chunks[3]),5), timespan=message_chunks[4])
 					elif message_chunks[3].isdigit() and message_chunks[4] in ['random', 'top']:
-						await print_top_post_from_subreddit(message, message_chunks[2], N=message_chunks[3], type=message_chunks[4])
+						await print_top_post_from_subreddit(message, message_chunks[2], N=min(int(message_chunks[3]),5), type=message_chunks[4])
 					elif message_chunks[3] in PERIODS and messages_chunks[4] in ['random', 'top']:
 						await print_top_post_from_subreddit(message, message_chunks[2], timespan=message_chunks[3], type=message_chunks[4])
 
@@ -431,7 +432,7 @@ async def on_message(message):
 						await message.channel.send(response)
 				elif len(message_chunks) == 6:
 					if message_chunks[3].isdigit() and message_chunks[4] in PERIODS and message_chunks[5] in ['random', 'top']:
-						await print_top_post_from_subreddit(message, message_chunks[2], N=message_chunks[3], timespan=message_chunks[4], type=message_chunks[5])
+						await print_top_post_from_subreddit(message, message_chunks[2], N=min(int(message_chunks[3]),5), timespan=message_chunks[4], type=message_chunks[5])
 					else:
 						logging.warning(f'Received a vote command from user {message.author.name} with wrong parameters. (3)')
 						response = """Bad command! Type `r! help` for the general help menu, and `r! help vote` for the help menu for the 'vote' command."""
