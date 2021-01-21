@@ -1,8 +1,7 @@
-
 #!/usr/bin/python3
 
 SCRIPT_NAME = 'reddiator.py'
-VERSION = '0.5.1'
+VERSION = '0.5.3'
 
 #== Description:	A Discord Bot to post reddit content automatically to channels
 #
@@ -101,9 +100,13 @@ async def respond(msg, link, permalink, subreddit):
 	else:
 		message = f' Here is the link to a random post from /r/{subreddit}: {link}\nLink to the original reddit post <'+ prefix + f'{permalink}'+'>'
 
+	custom_info_log(f'Link is: {link} ({permalink})')
 	await msg.channel.send(message)
 
-async def respond_vote(msg, links, subreddit):
+async def respond_vote(msg, links, subreddit, warning = False):
+
+	if warning == True:
+		await msg.channel.send('Sorry, couldn\'t find enough posts, giving you what I can...')
 
 	await msg.channel.send(f'Here are {len(links)} links from /r/{subreddit}. Vote for your favourite!\n')
 	for link in links.keys():
@@ -162,7 +165,7 @@ async def print_post_in_list(msg, listname, excluded_subs = []):
 		while not found:
 			random_index = randint(0, len(filtered_subreddits) - 1)
 			sub = filtered_subreddits[random_index]
-			custom_info_log(f'Link #{random_index} was chosen: {sub}')
+			custom_info_log(f'Subreddit #{random_index} was chosen: {sub}')
 			loop_check = loop_check + 1
 
 			try:
@@ -211,7 +214,8 @@ async def print_vote_posts_from_subreddit(msg, subreddit, N = 3, type = 'top', t
 	custom_info_log(f'Received vote request command for {subreddit} from user {msg.author.name} asking for {N} {type} posts')
 
 	results = {}
-	while len(results) < N:
+	loop_counter = 0
+	while len(results) < N and loop_counter < N*5:
 		try:
 			if type == 'top':
 				link, permalink = get_top_post_from_subreddit(subreddit, 50, timespan)
@@ -220,19 +224,32 @@ async def print_vote_posts_from_subreddit(msg, subreddit, N = 3, type = 'top', t
 
 			if link not in results.keys():
 				results[link] = permalink
+			else:
+				#kind of a dirty fix: each time we're seeing a link we have already we are incrementing the counter
+				#and we're stopping if we have this 5 times the requested number of posts
+				#no error is raised, we simply output the few posts we managed to get (at least the user doesn't get nothing)
+				loop_counter = loop_counter + 1
+
 		except RequestException as e:
 			await handle_error(msg, e.code)
 			return
-
-	await respond_vote(msg, results, subreddit)
-
+	if len(results) == N:
+		await respond_vote(msg, results, subreddit)
+	else:
+		logging.warning('Didn\t get enough posts from almost empty subreddit, warning the user...')
+		await respond_vote(msg, results, subreddit, True)
 
 async def print_penelope_post(msg):
-	custom_info_log('Received a request for a Penelope post !')
+	custom_info_log('Received a request for a Penelope post!')
 	penelope_subreddits = os.getenv('PENELOPE').split(',')
 	random_index = randint(0, len(penelope_subreddits) - 1)
 	await print_random_post_from_subreddit(msg, penelope_subreddits[random_index])
 
+async def print_ariavoire_post(msg):
+	custom_info_log('Received a request for an Ariavoire post!')
+	ariavoire_subreddits = os.getenv('ARIAVOIRE').split(',')
+	random_index = randint(0, len(ariavoire_subreddits) - 1)
+	await print_random_post_from_subreddit(msg, ariavoire_subreddits[random_index])
 
 def check_not_nsfw(msg, subreddit):
 	custom_info_log(f'Received a request to check NSFW status of subreddit {subreddit} for channel {msg.channel}')
@@ -306,6 +323,8 @@ async def on_message(message):
 		elif message_chunks[1].lower() in ['penelope','pénélope','pénelope']:
 			await print_penelope_post(message)
 
+		elif message_chunks[1].lower() in ['ariavoire','aria']:
+			await print_ariavoire_post(message)
 
 		elif message_chunks[1].lower() == 'top':
 			if len(message_chunks) == 2:

@@ -105,7 +105,7 @@ def make_request(url, allow_redirects = False):
 	elif post_req.status_code == 403:
 		if 'private' in post_req.text:
 			logging.error('Request to get a random post from specified subreddit failed with a HTTP 403 code, the subreddit is private.')
-			raise RequestException(3)
+			raise RequestException(2)
 		elif 'quarantined' in post_req.text:
 			logging.error('Request to get a random post from specified subreddit failed with a HTTP 403 code, the subreddit is quarantined.')
 			raise RequestException(4)
